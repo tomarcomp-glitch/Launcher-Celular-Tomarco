@@ -1,7 +1,11 @@
 package com.antonio.inicio
 
 import android.app.Activity
+import android.app.ActivityManager
 import android.app.AlertDialog
+import android.app.AppOpsManager
+import android.app.usage.UsageEvents
+import android.app.usage.UsageStatsManager
 import android.appwidget.AppWidgetHost
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProviderInfo
@@ -44,6 +48,7 @@ import android.widget.BaseAdapter
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.GridLayout
+import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ListView
@@ -68,6 +73,8 @@ private const val REQ_CONFIG = 6
 private const val ACCENT = 0xFF4CC2FF.toInt()
 
 class AppEntry(val key: String, val pkg: String, val label: String, val icon: Drawable)
+
+class WRow(val info: AppWidgetProviderInfo, val label: String, val app: String, val size: String)
 
 sealed class Row {
     object Pinned : Row()
@@ -120,6 +127,9 @@ class MainActivity : Activity() {
     private lateinit var content: LinearLayout
     private lateinit var scroll: ScrollView
     private lateinit var grid: GridLayout
+    private lateinit var barRow: LinearLayout
+    private val dismissed = HashMap<String, Long>()
+    private val launchedAt = HashMap<String, Long>()
     private lateinit var widgetBox: LinearLayout
     private val widgetMgr by lazy { AppWidgetManager.getInstance(this) }
     private val widgetHost by lazy { AppWidgetHost(this, 1024) }
@@ -336,6 +346,7 @@ class MainActivity : Activity() {
     }
 
     private fun launch(key: String) {
+        launchedAt[key.substringBefore('/')] = System.currentTimeMillis()
         try {
             val i = Intent(Intent.ACTION_MAIN)
             i.addCategory(Intent.CATEGORY_LAUNCHER)
@@ -363,7 +374,163 @@ class MainActivity : Activity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        renderBar()
+    }
+
+    // ---------------------------------------------------------------- barra de tarefas
+
+    private fun hasUsageAccess(): Boolean {
+        return try {
+            val ops = getSystemService(APP_OPS_SERVICE) as AppOpsManager
+            val mode = ops.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, android.os.Process.myUid(), packageName)
+            mode == AppOpsManager.MODE_ALLOWED
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private fun openPackages(): List<String> {
+        val now = System.currentTimeMillis()
+        val from = now - 6 * 3600000L
+        val first = LinkedHashMap<String, Long>()
+        val last = HashMap<String, Long>()
+        if (hasUsageAccess()) {
+            try {
+                val usm = getSystemService(USAGE_STATS_SERVICE) as UsageStatsManager
+                val ev = usm.queryEvents(from, now)
+                val e = UsageEvents.Event()
+                while (ev.hasNextEvent()) {
+                    ev.getNextEvent(e)
+                    if (e.eventType == UsageEvents.Event.MOVE_TO_FOREGROUND) {
+                        val p = e.packageName
+                        if (!first.containsKey(p)) first[p] = e.timeStamp
+                        last[p] = e.timeStamp
+                    }
+                }
+            } catch (ex: Exception) {
+            }
+        } else {
+            for ((p, t) in launchedAt) {
+                if (t >= from) {
+                    first[p] = t
+                    last[p] = t
+                }
+            }
+        }
+        val launchable = HashSet<String>()
+        for (a in apps) launchable.add(a.pkg)
+        val cand = ArrayList<String>()
+        for (p in first.keys) {
+            if (p == packageName || p !in launchable || p in store.hidden) continue
+            val l = last[p] ?: 0L
+            if (l <= (dismissed[p] ?: 0L)) continue
+            cand.add(p)
+        }
+        cand.sortByDescending { last[it] ?: 0L }
+        val top = ArrayList<String>(cand.take(8))
+        top.sortBy { first[it] ?: 0L }
+        return top
+    }
+
+    private fun renderBar() {
+        if (!::barRow.isInitialized) return
+        while (barRow.childCount > 1) barRow.removeViewAt(1)
+        val open = openPackages()
+        val shown = HashSet<String>()
+        for (k in store.bar) {
+            val e = byKey[k] ?: continue
+            if (isHidden(k)) continue
+            shown.add(e.pkg)
+            barRow.addView(barItem(e, e.pkg in open))
+        }
+        for (p in open) {
+            if (p in shown) continue
+            val e = apps.firstOrNull { it.pkg == p } ?: continue
+            barRow.addView(barItem(e, true))
+        }
+    }
+
+    private fun barItem(e: AppEntry, running: Boolean): View {
+        val c = LinearLayout(this)
+        c.orientation = LinearLayout.VERTICAL
+        c.gravity = Gravity.CENTER_HORIZONTAL
+        c.setPadding(dp(4), dp(4), dp(4), dp(2))
+        val iv = ImageView(this)
+        iv.setImageDrawable(copyIcon(e))
+        c.addView(iv, LinearLayout.LayoutParams(dp(36), dp(36)))
+        val ind = View(this)
+        ind.background = rounded(if (running) ACCENT else Color.TRANSPARENT, dp(2).toFloat())
+        val ilp = LinearLayout.LayoutParams(dp(if (running) 16 else 6), dp(3))
+        ilp.topMargin = dp(2)
+        c.addView(ind, ilp)
+        c.setOnClickListener { launch(e.key) }
+        c.setOnLongClickListener {
+            showBarMenu(e, running)
+            true
+        }
+        return c
+    }
+
+    private fun showBarMenu(e: AppEntry, running: Boolean) {
+        val names = ArrayList<String>()
+        val acts = ArrayList<() -> Unit>()
+        fun add(n: String, a: () -> Unit) {
+            names.add(n)
+            acts.add(a)
+        }
+        if (e.key in store.bar) {
+            add("Desafixar da barra") {
+                store.bar.remove(e.key)
+                store.save()
+                renderBar()
+            }
+        } else {
+            add("Fixar na barra") {
+                store.bar.add(e.key)
+                store.save()
+                renderBar()
+            }
+        }
+        if (running) {
+            add("Encerrar app") { killApp(e.pkg) }
+            add("Tirar dos abertos (sem encerrar)") {
+                dismissed[e.pkg] = System.currentTimeMillis()
+                renderBar()
+            }
+        }
+        add("Informações do app") { appInfo(e.pkg) }
+        dlg().setTitle(e.label).setItems(names.toTypedArray()) { _, w -> acts[w]() }.show()
+    }
+
+    private fun killApp(pkg: String) {
+        try {
+            val am = getSystemService(ACTIVITY_SERVICE) as ActivityManager
+            am.killBackgroundProcesses(pkg)
+        } catch (e: Exception) {
+        }
+        dismissed[pkg] = System.currentTimeMillis()
+        renderBar()
+        toast("App encerrado")
+    }
+
+    private fun usageSettings() {
+        try {
+            val i = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
+            i.data = Uri.parse("package:$packageName")
+            startActivity(i)
+        } catch (e: Exception) {
+            try {
+                startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
+            } catch (e2: Exception) {
+                toast("Abra Configurações > Privacidade > Acesso especial > Acesso ao uso")
+            }
+        }
+    }
+
     private fun refreshAll() {
+        renderBar()
         renderWidgets()
         renderHome()
         refreshRows()
@@ -411,9 +578,21 @@ class MainActivity : Activity() {
         val taskbar = FrameLayout(this)
         val startBtn = ImageView(this)
         startBtn.setImageDrawable(StartDrawable())
-        startBtn.background = rounded(0xB3101014.toInt(), dp(16).toFloat())
+        startBtn.background = rounded(0x22FFFFFF, dp(14).toFloat())
         startBtn.setOnClickListener { if (panelOpen) closePanel() else openPanel() }
-        taskbar.addView(startBtn, FrameLayout.LayoutParams(dp(52), dp(52), Gravity.CENTER))
+        barRow = LinearLayout(this)
+        barRow.orientation = LinearLayout.HORIZONTAL
+        barRow.gravity = Gravity.CENTER_VERTICAL
+        barRow.background = rounded(0xB3101014.toInt(), dp(20).toFloat())
+        barRow.setPadding(dp(6), dp(4), dp(6), dp(4))
+        barRow.addView(startBtn, LinearLayout.LayoutParams(dp(46), dp(46)))
+        val barScroll = HorizontalScrollView(this)
+        barScroll.isHorizontalScrollBarEnabled = false
+        barScroll.overScrollMode = View.OVER_SCROLL_NEVER
+        barScroll.addView(barRow)
+        val blp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.CENTER)
+        blp.setMargins(dp(64), 0, dp(64), 0)
+        taskbar.addView(barScroll, blp)
 
         val gear = ImageView(this)
         gear.setImageResource(android.R.drawable.ic_menu_preferences)
@@ -880,20 +1059,131 @@ class MainActivity : Activity() {
         }.show()
     }
 
+    private fun loadWidgetImage(p: AppWidgetProviderInfo): Drawable? {
+        val d = resources.displayMetrics.densityDpi
+        try {
+            val pv = p.loadPreviewImage(this, d)
+            if (pv != null) return pv
+        } catch (e: Exception) {
+        }
+        try {
+            return p.loadIcon(this, d)
+        } catch (e: Exception) {
+        }
+        return null
+    }
+
+    private fun widgetPickRow(): LinearLayout {
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = Gravity.CENTER_VERTICAL
+        row.setPadding(dp(4), dp(8), dp(4), dp(8))
+        val iv = ImageView(this)
+        iv.scaleType = ImageView.ScaleType.FIT_CENTER
+        row.addView(iv, LinearLayout.LayoutParams(dp(84), dp(64)))
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        val t1 = TextView(this)
+        t1.setTextColor(Color.WHITE)
+        t1.textSize = 16f
+        t1.typeface = Typeface.DEFAULT_BOLD
+        t1.maxLines = 2
+        t1.ellipsize = TextUtils.TruncateAt.END
+        val t2 = TextView(this)
+        t2.setTextColor(0xB3FFFFFF.toInt())
+        t2.textSize = 12f
+        t2.maxLines = 2
+        t2.ellipsize = TextUtils.TruncateAt.END
+        col.addView(t1)
+        col.addView(t2)
+        val clp = LinearLayout.LayoutParams(0, WRAP, 1f)
+        clp.marginStart = dp(12)
+        row.addView(col, clp)
+        return row
+    }
+
     private fun addWidgetDialog() {
         val pm = packageManager
         val dm = resources.displayMetrics
-        val ps = widgetMgr.installedProviders.sortedBy { norm(it.loadLabel(pm) ?: "") }
-        if (ps.isEmpty()) {
+        val all = ArrayList<WRow>()
+        for (p in widgetMgr.installedProviders) {
+            val pkg = p.provider.packageName
+            val app = try {
+                pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
+            } catch (e: Exception) {
+                pkg
+            }
+            val lbl = p.loadLabel(pm) ?: "Widget"
+            val wd = (p.minWidth / dm.density).toInt()
+            val hd = (p.minHeight / dm.density).toInt()
+            all.add(WRow(p, lbl, app, "$wd×$hd dp"))
+        }
+        if (all.isEmpty()) {
             toast("Nenhum widget disponível")
             return
         }
-        val labels = ps.map {
-            val wd = (it.minWidth / dm.density).toInt()
-            val hd = (it.minHeight / dm.density).toInt()
-            (it.loadLabel(pm) ?: "Widget") + "  ·  " + wd + "×" + hd + "dp  ·  " + it.provider.packageName
-        }.toTypedArray()
-        dlg().setTitle("Escolher widget").setItems(labels) { _, w -> startAddWidget(ps[w]) }.show()
+        all.sortBy { norm(it.app + " " + it.label) }
+        val shown = ArrayList<WRow>(all)
+        val images = HashMap<String, Drawable?>()
+
+        val adapter = object : BaseAdapter() {
+            override fun getCount(): Int = shown.size
+
+            override fun getItem(position: Int): Any = shown[position]
+
+            override fun getItemId(position: Int): Long = position.toLong()
+
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
+                val row = (convertView as? LinearLayout) ?: widgetPickRow()
+                val r = shown[position]
+                val iv = row.getChildAt(0) as ImageView
+                val col = row.getChildAt(1) as LinearLayout
+                (col.getChildAt(0) as TextView).text = r.label
+                (col.getChildAt(1) as TextView).text = r.app + "  ·  " + r.size
+                val key = r.info.provider.flattenToString()
+                if (!images.containsKey(key)) images[key] = loadWidgetImage(r.info)
+                val img = images[key]
+                iv.setImageDrawable(img?.constantState?.newDrawable() ?: img)
+                return row
+            }
+        }
+
+        val box = LinearLayout(this)
+        box.orientation = LinearLayout.VERTICAL
+        box.setPadding(dp(16), dp(8), dp(16), 0)
+        val q = EditText(this)
+        q.hint = "Pesquisar widget ou app"
+        q.setHintTextColor(0x99FFFFFF.toInt())
+        q.setTextColor(Color.WHITE)
+        q.isSingleLine = true
+        q.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {
+            }
+
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+            }
+
+            override fun afterTextChanged(s: Editable?) {
+                val nq = norm(q.text.toString().trim())
+                shown.clear()
+                for (r in all) {
+                    if (nq.isEmpty() || norm(r.app + " " + r.label).contains(nq)) shown.add(r)
+                }
+                adapter.notifyDataSetChanged()
+            }
+        })
+        box.addView(q, LinearLayout.LayoutParams(MATCH, WRAP))
+        val lv = ListView(this)
+        lv.adapter = adapter
+        box.addView(lv, LinearLayout.LayoutParams(MATCH, dm.heightPixels * 6 / 10))
+
+        val dialog = dlg().setTitle("Escolher widget").setView(box).setNegativeButton("Cancelar", null).create()
+        lv.setOnItemClickListener { _, _, pos, _ ->
+            val r = shown[pos]
+            dialog.dismiss()
+            startAddWidget(r.info)
+        }
+        dialog.show()
     }
 
     private fun startAddWidget(info: AppWidgetProviderInfo) {
@@ -1423,6 +1713,19 @@ class MainActivity : Activity() {
                 refreshRows()
             }
         }
+        if (e.key in store.bar) {
+            add("Desafixar da barra de tarefas") {
+                store.bar.remove(e.key)
+                store.save()
+                renderBar()
+            }
+        } else {
+            add("Fixar na barra de tarefas") {
+                store.bar.add(e.key)
+                store.save()
+                renderBar()
+            }
+        }
         add("Ocultar app") {
             store.hidden.add(e.pkg)
             store.save()
@@ -1446,7 +1749,8 @@ class MainActivity : Activity() {
             "Nova pasta…",
             "Exportar backup (arquivo)",
             "Importar backup (arquivo)",
-            "Definir como launcher padrão"
+            "Definir como launcher padrão",
+            "Apps abertos na barra: " + (if (hasUsageAccess()) "ativo (toque para gerenciar)" else "toque para ativar")
         )
         dlg().setTitle("Ajustes do início").setItems(items) { _, w ->
             when (w) {
@@ -1470,6 +1774,7 @@ class MainActivity : Activity() {
                         toast("Abra Configurações > Apps > Apps padrão > App de início")
                     }
                 }
+                10 -> usageSettings()
                 else -> {
                 }
             }

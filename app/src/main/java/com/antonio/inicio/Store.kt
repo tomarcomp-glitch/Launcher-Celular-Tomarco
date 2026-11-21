@@ -21,6 +21,7 @@ class Store(ctx: Context) {
     var items: MutableList<Item> = mutableListOf()
     var hidden: MutableSet<String> = mutableSetOf()
     var pinned: MutableList<String> = mutableListOf()
+    var bar: MutableList<String> = mutableListOf()
     var iconDp = 52
     var labels = true
     var wallMode = 0
@@ -71,6 +72,7 @@ class Store(ctx: Context) {
         o.put("items", arr)
         o.put("hidden", JSONArray(hidden.toList()))
         o.put("pinned", JSONArray(pinned))
+        o.put("bar", JSONArray(bar))
         o.put("iconDp", iconDp)
         o.put("labels", labels)
         o.put("wallMode", wallMode)
@@ -98,9 +100,11 @@ class Store(ctx: Context) {
             }
             val h = strs(o.optJSONArray("hidden")).toMutableSet()
             val p = strs(o.optJSONArray("pinned"))
+            val b = strs(o.optJSONArray("bar"))
             items = list
             hidden = h
             pinned = p
+            bar = b
             iconDp = o.optInt("iconDp", 52).coerceIn(32, 96)
             labels = o.optBoolean("labels", true)
             wallMode = o.optInt("wallMode", 0)
