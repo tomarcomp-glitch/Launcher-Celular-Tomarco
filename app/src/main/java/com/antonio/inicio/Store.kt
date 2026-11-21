@@ -23,6 +23,7 @@ class Store(ctx: Context) {
     var pinned: MutableList<String> = mutableListOf()
     var bar: MutableList<String> = mutableListOf()
     var iconDp = 52
+    var openMin = 30
     var labels = true
     var wallMode = 0
     var rotation = 0
@@ -74,6 +75,7 @@ class Store(ctx: Context) {
         o.put("pinned", JSONArray(pinned))
         o.put("bar", JSONArray(bar))
         o.put("iconDp", iconDp)
+        o.put("openMin", openMin)
         o.put("labels", labels)
         o.put("wallMode", wallMode)
         o.put("rotation", rotation)
@@ -106,6 +108,7 @@ class Store(ctx: Context) {
             pinned = p
             bar = b
             iconDp = o.optInt("iconDp", 52).coerceIn(32, 96)
+            openMin = o.optInt("openMin", 30).coerceIn(5, 1440)
             labels = o.optBoolean("labels", true)
             wallMode = o.optInt("wallMode", 0)
             rotation = o.optInt("rotation", 0)

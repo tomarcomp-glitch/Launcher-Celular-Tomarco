@@ -70,7 +70,6 @@ private const val REQ_EXPORT = 3
 private const val REQ_IMPORT = 4
 private const val REQ_BIND = 5
 private const val REQ_CONFIG = 6
-private const val EV_ACTIVITY_DESTROYED = 24
 private const val ACCENT = 0xFF4CC2FF.toInt()
 
 class AppEntry(val key: String, val pkg: String, val label: String, val icon: Drawable)
@@ -394,7 +393,8 @@ class MainActivity : Activity() {
 
     private fun openPackages(): List<String> {
         val now = System.currentTimeMillis()
-        val from = now - 6 * 3600000L
+        val keepMs = store.openMin * 60000L
+        val from = now - 24 * 3600000L
         val first = LinkedHashMap<String, Long>()
         val last = HashMap<String, Long>()
         val alive = HashMap<String, HashSet<String>>()
@@ -407,7 +407,7 @@ class MainActivity : Activity() {
                 while (ev.hasNextEvent()) {
                     ev.getNextEvent(e)
                     val t = e.eventType
-                    if (t == UsageEvents.Event.MOVE_TO_FOREGROUND) {
+                    if (t == UsageEvents.Event.MOVE_TO_FOREGROUND || t == UsageEvents.Event.MOVE_TO_BACKGROUND) {
                         val p = e.packageName
                         if (!first.containsKey(p)) first[p] = e.timeStamp
                         last[p] = e.timeStamp
@@ -417,7 +417,7 @@ class MainActivity : Activity() {
                             alive[p] = set
                         }
                         set.add(e.className ?: "")
-                    } else if (t == EV_ACTIVITY_DESTROYED) {
+                    } else if (t == UsageEvents.Event.ACTIVITY_DESTROYED) {
                         alive[e.packageName]?.remove(e.className ?: "")
                     }
                 }
@@ -425,10 +425,8 @@ class MainActivity : Activity() {
             }
         } else {
             for ((p, t) in launchedAt) {
-                if (t >= from) {
-                    first[p] = t
-                    last[p] = t
-                }
+                first[p] = t
+                last[p] = t
             }
         }
         val launchable = HashSet<String>()
@@ -438,6 +436,7 @@ class MainActivity : Activity() {
             if (p == packageName || p !in launchable || p in store.hidden) continue
             if (usage && (alive[p]?.isEmpty() ?: true)) continue
             val l = last[p] ?: 0L
+            if (now - l > keepMs) continue
             if (l <= (dismissed[p] ?: 0L)) continue
             cand.add(p)
         }
@@ -528,6 +527,70 @@ class MainActivity : Activity() {
         toast("App encerrado")
     }
 
+    private fun clearOpen() {
+        val nowMs = System.currentTimeMillis()
+        for (p in openPackages()) dismissed[p] = nowMs
+        renderBar()
+        toast("Lista de apps abertos limpa")
+    }
+
+    private fun usageDialog() {
+        val items = arrayOf(
+            "Permitir acesso ao uso…",
+            "Considerar aberto por: " + store.openMin + " min",
+            "Limpar lista de abertos agora",
+            "Diagnóstico"
+        )
+        dlg().setTitle("Apps abertos na barra").setItems(items) { _, w ->
+            when (w) {
+                0 -> usageSettings()
+                1 -> openTimeDialog()
+                2 -> clearOpen()
+                3 -> usageDiagnostic()
+                else -> {
+                }
+            }
+        }.show()
+    }
+
+    private fun openTimeDialog() {
+        val labels = arrayOf("10 minutos", "30 minutos", "1 hora", "3 horas", "6 horas")
+        val mins = intArrayOf(10, 30, 60, 180, 360)
+        dlg().setTitle("Considerar aberto por").setItems(labels) { _, w ->
+            store.openMin = mins[w]
+            store.save()
+            renderBar()
+        }.show()
+    }
+
+    private fun usageDiagnostic() {
+        if (!hasUsageAccess()) {
+            toast("O acesso ao uso ainda não foi concedido")
+            return
+        }
+        val counts = HashMap<Int, Int>()
+        var total = 0
+        try {
+            val now = System.currentTimeMillis()
+            val usm = getSystemService(USAGE_STATS_SERVICE) as UsageStatsManager
+            val ev = usm.queryEvents(now - 6 * 3600000L, now)
+            val e = UsageEvents.Event()
+            while (ev.hasNextEvent()) {
+                ev.getNextEvent(e)
+                counts[e.eventType] = (counts[e.eventType] ?: 0) + 1
+                total++
+            }
+        } catch (ex: Exception) {
+        }
+        val msg = "Eventos nas últimas 6 horas: " + total +
+            "\nTela aberta: " + (counts[1] ?: 0) +
+            "\nTela em segundo plano: " + (counts[2] ?: 0) +
+            "\nTela parada: " + (counts[23] ?: 0) +
+            "\nTela destruída: " + (counts[24] ?: 0) +
+            "\n\nSe \"destruída\" for 0, este Android não avisa quando um app é fechado, e a barra usa só o tempo definido."
+        dlg().setTitle("Diagnóstico").setMessage(msg).setPositiveButton("OK", null).show()
+    }
+
     private fun usageSettings() {
         try {
             val i = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
@@ -594,10 +657,7 @@ class MainActivity : Activity() {
         startBtn.background = rounded(0x22FFFFFF, dp(14).toFloat())
         startBtn.setOnClickListener { if (panelOpen) closePanel() else openPanel() }
         startBtn.setOnLongClickListener {
-            val nowMs = System.currentTimeMillis()
-            for (p in openPackages()) dismissed[p] = nowMs
-            renderBar()
-            toast("Lista de apps abertos limpa")
+            clearOpen()
             true
         }
         barRow = LinearLayout(this)
@@ -1794,7 +1854,7 @@ class MainActivity : Activity() {
                         toast("Abra Configurações > Apps > Apps padrão > App de início")
                     }
                 }
-                10 -> usageSettings()
+                10 -> usageDialog()
                 else -> {
                 }
             }
