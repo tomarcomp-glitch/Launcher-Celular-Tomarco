@@ -69,8 +69,6 @@ private const val ACCENT = 0xFF4CC2FF.toInt()
 
 class AppEntry(val key: String, val pkg: String, val label: String, val icon: Drawable)
 
-class WRow(val info: AppWidgetProviderInfo, val label: String, val app: String, val size: String)
-
 sealed class Row {
     object Pinned : Row()
     class Letter(val c: String) : Row()
@@ -882,131 +880,20 @@ class MainActivity : Activity() {
         }.show()
     }
 
-    private fun loadWidgetImage(p: AppWidgetProviderInfo): Drawable? {
-        val d = resources.displayMetrics.densityDpi
-        try {
-            val pv = p.loadPreviewImage(this, d)
-            if (pv != null) return pv
-        } catch (e: Exception) {
-        }
-        try {
-            return p.loadIcon(this, d)
-        } catch (e: Exception) {
-        }
-        return null
-    }
-
-    private fun widgetPickRow(): LinearLayout {
-        val row = LinearLayout(this)
-        row.orientation = LinearLayout.HORIZONTAL
-        row.gravity = Gravity.CENTER_VERTICAL
-        row.setPadding(dp(4), dp(8), dp(4), dp(8))
-        val iv = ImageView(this)
-        iv.scaleType = ImageView.ScaleType.FIT_CENTER
-        row.addView(iv, LinearLayout.LayoutParams(dp(84), dp(64)))
-        val col = LinearLayout(this)
-        col.orientation = LinearLayout.VERTICAL
-        val t1 = TextView(this)
-        t1.setTextColor(Color.WHITE)
-        t1.textSize = 16f
-        t1.typeface = Typeface.DEFAULT_BOLD
-        t1.maxLines = 2
-        t1.ellipsize = TextUtils.TruncateAt.END
-        val t2 = TextView(this)
-        t2.setTextColor(0xB3FFFFFF.toInt())
-        t2.textSize = 12f
-        t2.maxLines = 2
-        t2.ellipsize = TextUtils.TruncateAt.END
-        col.addView(t1)
-        col.addView(t2)
-        val clp = LinearLayout.LayoutParams(0, WRAP, 1f)
-        clp.marginStart = dp(12)
-        row.addView(col, clp)
-        return row
-    }
-
     private fun addWidgetDialog() {
         val pm = packageManager
         val dm = resources.displayMetrics
-        val all = ArrayList<WRow>()
-        for (p in widgetMgr.installedProviders) {
-            val pkg = p.provider.packageName
-            val app = try {
-                pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
-            } catch (e: Exception) {
-                pkg
-            }
-            val lbl = p.loadLabel(pm) ?: "Widget"
-            val wd = (p.minWidth / dm.density).toInt()
-            val hd = (p.minHeight / dm.density).toInt()
-            all.add(WRow(p, lbl, app, "$wd×$hd dp"))
-        }
-        if (all.isEmpty()) {
+        val ps = widgetMgr.installedProviders.sortedBy { norm(it.loadLabel(pm) ?: "") }
+        if (ps.isEmpty()) {
             toast("Nenhum widget disponível")
             return
         }
-        all.sortBy { norm(it.app + " " + it.label) }
-        val shown = ArrayList<WRow>(all)
-        val images = HashMap<String, Drawable?>()
-
-        val adapter = object : BaseAdapter() {
-            override fun getCount(): Int = shown.size
-
-            override fun getItem(position: Int): Any = shown[position]
-
-            override fun getItemId(position: Int): Long = position.toLong()
-
-            override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
-                val row = (convertView as? LinearLayout) ?: widgetPickRow()
-                val r = shown[position]
-                val iv = row.getChildAt(0) as ImageView
-                val col = row.getChildAt(1) as LinearLayout
-                (col.getChildAt(0) as TextView).text = r.label
-                (col.getChildAt(1) as TextView).text = r.app + "  ·  " + r.size
-                val key = r.info.provider.flattenToString()
-                if (!images.containsKey(key)) images[key] = loadWidgetImage(r.info)
-                val img = images[key]
-                iv.setImageDrawable(img?.constantState?.newDrawable() ?: img)
-                return row
-            }
-        }
-
-        val box = LinearLayout(this)
-        box.orientation = LinearLayout.VERTICAL
-        box.setPadding(dp(16), dp(8), dp(16), 0)
-        val q = EditText(this)
-        q.hint = "Pesquisar widget ou app"
-        q.setHintTextColor(0x99FFFFFF.toInt())
-        q.setTextColor(Color.WHITE)
-        q.isSingleLine = true
-        q.addTextChangedListener(object : TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {
-            }
-
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-            }
-
-            override fun afterTextChanged(s: Editable?) {
-                val nq = norm(q.text.toString().trim())
-                shown.clear()
-                for (r in all) {
-                    if (nq.isEmpty() || norm(r.app + " " + r.label).contains(nq)) shown.add(r)
-                }
-                adapter.notifyDataSetChanged()
-            }
-        })
-        box.addView(q, LinearLayout.LayoutParams(MATCH, WRAP))
-        val lv = ListView(this)
-        lv.adapter = adapter
-        box.addView(lv, LinearLayout.LayoutParams(MATCH, dm.heightPixels * 6 / 10))
-
-        val dialog = dlg().setTitle("Escolher widget").setView(box).setNegativeButton("Cancelar", null).create()
-        lv.setOnItemClickListener { _, _, pos, _ ->
-            val r = shown[pos]
-            dialog.dismiss()
-            startAddWidget(r.info)
-        }
-        dialog.show()
+        val labels = ps.map {
+            val wd = (it.minWidth / dm.density).toInt()
+            val hd = (it.minHeight / dm.density).toInt()
+            (it.loadLabel(pm) ?: "Widget") + "  ·  " + wd + "×" + hd + "dp  ·  " + it.provider.packageName
+        }.toTypedArray()
+        dlg().setTitle("Escolher widget").setItems(labels) { _, w -> startAddWidget(ps[w]) }.show()
     }
 
     private fun startAddWidget(info: AppWidgetProviderInfo) {
