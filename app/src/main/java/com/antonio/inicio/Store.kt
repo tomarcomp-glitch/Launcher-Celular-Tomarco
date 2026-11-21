@@ -12,9 +12,12 @@ class Item(
     val kids: MutableList<String> = mutableListOf()
 )
 
+class WItem(val id: Int, var h: Int)
+
 class Store(ctx: Context) {
     private val sp = ctx.getSharedPreferences("inicio", Context.MODE_PRIVATE)
 
+    var widgets: MutableList<WItem> = mutableListOf()
     var items: MutableList<Item> = mutableListOf()
     var hidden: MutableSet<String> = mutableSetOf()
     var pinned: MutableList<String> = mutableListOf()
@@ -25,10 +28,32 @@ class Store(ctx: Context) {
 
     init {
         fromJson(sp.getString("data", null))
+        loadWidgets(sp.getString("widgets", null))
     }
 
     fun save() {
-        sp.edit().putString("data", toJson()).apply()
+        val wa = JSONArray()
+        for (w in widgets) {
+            val j = JSONObject()
+            j.put("i", w.id)
+            j.put("h", w.h)
+            wa.put(j)
+        }
+        sp.edit().putString("data", toJson()).putString("widgets", wa.toString()).apply()
+    }
+
+    private fun loadWidgets(s: String?) {
+        if (s.isNullOrBlank()) return
+        try {
+            val a = JSONArray(s)
+            val list = mutableListOf<WItem>()
+            for (i in 0 until a.length()) {
+                val j = a.getJSONObject(i)
+                list.add(WItem(j.getInt("i"), j.optInt("h", 100)))
+            }
+            widgets = list
+        } catch (e: Exception) {
+        }
     }
 
     fun toJson(): String {

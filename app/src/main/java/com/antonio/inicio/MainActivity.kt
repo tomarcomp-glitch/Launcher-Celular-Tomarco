@@ -2,6 +2,9 @@ package com.antonio.inicio
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.appwidget.AppWidgetHost
+import android.appwidget.AppWidgetManager
+import android.appwidget.AppWidgetProviderInfo
 import android.content.BroadcastReceiver
 import android.content.ClipData
 import android.content.Context
@@ -60,6 +63,8 @@ private const val REQ_PORT = 1
 private const val REQ_LAND = 2
 private const val REQ_EXPORT = 3
 private const val REQ_IMPORT = 4
+private const val REQ_BIND = 5
+private const val REQ_CONFIG = 6
 private const val ACCENT = 0xFF4CC2FF.toInt()
 
 class AppEntry(val key: String, val pkg: String, val label: String, val icon: Drawable)
@@ -115,6 +120,10 @@ class MainActivity : Activity() {
     private lateinit var content: LinearLayout
     private lateinit var scroll: ScrollView
     private lateinit var grid: GridLayout
+    private lateinit var widgetBox: LinearLayout
+    private val widgetMgr by lazy { AppWidgetManager.getInstance(this) }
+    private val widgetHost by lazy { AppWidgetHost(this, 1024) }
+    private var pendingWidgetId = -1
     private lateinit var emptyHint: TextView
     private lateinit var dropBar: LinearLayout
     private lateinit var dropRemove: TextView
@@ -176,6 +185,22 @@ class MainActivity : Activity() {
         loadApps()
     }
 
+    override fun onStart() {
+        super.onStart()
+        try {
+            widgetHost.startListening()
+        } catch (e: Exception) {
+        }
+    }
+
+    override fun onStop() {
+        try {
+            widgetHost.stopListening()
+        } catch (e: Exception) {
+        }
+        super.onStop()
+    }
+
     override fun onDestroy() {
         try {
             unregisterReceiver(pkgReceiver)
@@ -211,6 +236,17 @@ class MainActivity : Activity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQ_BIND || requestCode == REQ_CONFIG) {
+            val id = pendingWidgetId
+            if (id < 0) return
+            if (resultCode == RESULT_OK) {
+                if (requestCode == REQ_BIND) configureWidget(id) else finishAddWidget(id)
+            } else {
+                widgetHost.deleteAppWidgetId(id)
+                pendingWidgetId = -1
+            }
+            return
+        }
         val uri = data?.data
         if (resultCode != RESULT_OK || uri == null) return
         when (requestCode) {
@@ -328,6 +364,7 @@ class MainActivity : Activity() {
     }
 
     private fun refreshAll() {
+        renderWidgets()
         renderHome()
         refreshRows()
         if (openFolderId != null) renderFolder()
@@ -352,7 +389,13 @@ class MainActivity : Activity() {
         scroll.overScrollMode = View.OVER_SCROLL_NEVER
         scroll.isFillViewport = true
         grid = GridLayout(this)
-        scroll.addView(grid, FrameLayout.LayoutParams(MATCH, WRAP))
+        widgetBox = LinearLayout(this)
+        widgetBox.orientation = LinearLayout.VERTICAL
+        val inner = LinearLayout(this)
+        inner.orientation = LinearLayout.VERTICAL
+        inner.addView(widgetBox, LinearLayout.LayoutParams(MATCH, WRAP))
+        inner.addView(grid, LinearLayout.LayoutParams(MATCH, WRAP))
+        scroll.addView(inner, FrameLayout.LayoutParams(MATCH, WRAP))
         homeArea.addView(scroll, FrameLayout.LayoutParams(MATCH, MATCH))
 
         emptyHint = TextView(this)
@@ -405,7 +448,10 @@ class MainActivity : Activity() {
             val w = r - l
             if (w != homeW) {
                 homeW = w
-                scroll.post { renderHome() }
+                scroll.post {
+                    renderWidgets()
+                    renderHome()
+                }
             }
         }
         root.addOnLayoutChangeListener { _, l, t, r, b, ol, ot, oRight, oBottom ->
@@ -798,7 +844,137 @@ class MainActivity : Activity() {
             grid.addView(v, lp)
             count++
         }
-        emptyHint.visibility = if (count == 0) View.VISIBLE else View.GONE
+        emptyHint.visibility = if (count == 0 && store.widgets.isEmpty()) View.VISIBLE else View.GONE
+    }
+
+    // ---------------------------------------------------------------- widgets
+
+    private fun renderWidgets() {
+        if (!::widgetBox.isInitialized) return
+        widgetBox.removeAllViews()
+        val dm = resources.displayMetrics
+        val avail = if (homeW > 0) homeW else dm.widthPixels
+        val wDp = (avail / dm.density).toInt()
+        for (w in store.widgets) {
+            val info = widgetMgr.getAppWidgetInfo(w.id) ?: continue
+            try {
+                val hv = widgetHost.createView(this, w.id, info)
+                hv.updateAppWidgetSize(null, wDp, w.h, wDp, w.h)
+                val lp = LinearLayout.LayoutParams(MATCH, dp(w.h))
+                lp.setMargins(0, dp(4), 0, dp(4))
+                widgetBox.addView(hv, lp)
+            } catch (e: Exception) {
+            }
+        }
+    }
+
+    private fun widgetsDialog() {
+        val items = arrayOf("Adicionar widget…", "Gerenciar widgets…")
+        dlg().setTitle("Widgets").setItems(items) { _, w ->
+            when (w) {
+                0 -> addWidgetDialog()
+                1 -> manageWidgets()
+                else -> {
+                }
+            }
+        }.show()
+    }
+
+    private fun addWidgetDialog() {
+        val pm = packageManager
+        val dm = resources.displayMetrics
+        val ps = widgetMgr.installedProviders.sortedBy { norm(it.loadLabel(pm) ?: "") }
+        if (ps.isEmpty()) {
+            toast("Nenhum widget disponível")
+            return
+        }
+        val labels = ps.map {
+            val wd = (it.minWidth / dm.density).toInt()
+            val hd = (it.minHeight / dm.density).toInt()
+            (it.loadLabel(pm) ?: "Widget") + "  ·  " + wd + "×" + hd + "dp  ·  " + it.provider.packageName
+        }.toTypedArray()
+        dlg().setTitle("Escolher widget").setItems(labels) { _, w -> startAddWidget(ps[w]) }.show()
+    }
+
+    private fun startAddWidget(info: AppWidgetProviderInfo) {
+        val id = widgetHost.allocateAppWidgetId()
+        pendingWidgetId = id
+        if (widgetMgr.bindAppWidgetIdIfAllowed(id, info.provider)) {
+            configureWidget(id)
+        } else {
+            val i = Intent(AppWidgetManager.ACTION_APPWIDGET_BIND)
+            i.putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id)
+            i.putExtra(AppWidgetManager.EXTRA_APPWIDGET_PROVIDER, info.provider)
+            try {
+                startActivityForResult(i, REQ_BIND)
+            } catch (e: Exception) {
+                widgetHost.deleteAppWidgetId(id)
+                pendingWidgetId = -1
+                toast("Não foi possível adicionar o widget")
+            }
+        }
+    }
+
+    private fun configureWidget(id: Int) {
+        val info = widgetMgr.getAppWidgetInfo(id)
+        if (info != null && info.configure != null) {
+            try {
+                widgetHost.startAppWidgetConfigureActivityForResult(this, id, 0, REQ_CONFIG, null)
+                return
+            } catch (e: Exception) {
+            }
+        }
+        finishAddWidget(id)
+    }
+
+    private fun finishAddWidget(id: Int) {
+        val info = widgetMgr.getAppWidgetInfo(id)
+        val h = if (info != null) (info.minHeight / resources.displayMetrics.density).toInt().coerceIn(60, 400) else 100
+        store.widgets.add(WItem(id, h))
+        store.save()
+        pendingWidgetId = -1
+        renderWidgets()
+        renderHome()
+        scroll.smoothScrollTo(0, 0)
+    }
+
+    private fun manageWidgets() {
+        if (store.widgets.isEmpty()) {
+            toast("Nenhum widget adicionado")
+            return
+        }
+        val pm = packageManager
+        val names = store.widgets.map { w ->
+            (widgetMgr.getAppWidgetInfo(w.id)?.loadLabel(pm) ?: "Widget indisponível") + "  (" + w.h + "dp)"
+        }.toTypedArray()
+        dlg().setTitle("Seus widgets").setItems(names) { _, i -> widgetOptions(store.widgets[i]) }.show()
+    }
+
+    private fun widgetOptions(w: WItem) {
+        val items = arrayOf("Aumentar altura", "Diminuir altura", "Mover para cima", "Mover para baixo", "Remover")
+        dlg().setTitle("Widget").setItems(items) { _, k ->
+            val idx = store.widgets.indexOf(w)
+            when (k) {
+                0 -> w.h = min(w.h + 20, 500)
+                1 -> w.h = max(w.h - 20, 40)
+                2 -> if (idx > 0) {
+                    store.widgets.removeAt(idx)
+                    store.widgets.add(idx - 1, w)
+                }
+                3 -> if (idx >= 0 && idx < store.widgets.size - 1) {
+                    store.widgets.removeAt(idx)
+                    store.widgets.add(idx + 1, w)
+                }
+                4 -> {
+                    widgetHost.deleteAppWidgetId(w.id)
+                    store.widgets.remove(w)
+                }
+                else -> {
+                }
+            }
+            store.save()
+            renderWidgets()
+        }.show()
     }
 
     private fun appCell(e: AppEntry, size: Int): View {
@@ -1261,6 +1437,7 @@ class MainActivity : Activity() {
 
     private fun showSettings() {
         val items = arrayOf(
+            "Widgets (relógio, clima…)",
             "Papel de parede…",
             "Rotação da tela…",
             "Tamanho dos ícones…",
@@ -1273,19 +1450,20 @@ class MainActivity : Activity() {
         )
         dlg().setTitle("Ajustes do início").setItems(items) { _, w ->
             when (w) {
-                0 -> wallpaperDialog()
-                1 -> rotationDialog()
-                2 -> sizeDialog()
-                3 -> {
+                0 -> widgetsDialog()
+                1 -> wallpaperDialog()
+                2 -> rotationDialog()
+                3 -> sizeDialog()
+                4 -> {
                     store.labels = !store.labels
                     store.save()
                     renderHome()
                 }
-                4 -> hiddenDialog()
-                5 -> newFolder()
-                6 -> exportBackup()
-                7 -> importBackup()
-                8 -> {
+                5 -> hiddenDialog()
+                6 -> newFolder()
+                7 -> exportBackup()
+                8 -> importBackup()
+                9 -> {
                     try {
                         startActivity(Intent(Settings.ACTION_HOME_SETTINGS))
                     } catch (e: Exception) {
