@@ -1,11 +1,7 @@
 package com.antonio.inicio
 
 import android.app.Activity
-import android.app.ActivityManager
 import android.app.AlertDialog
-import android.app.AppOpsManager
-import android.app.usage.UsageEvents
-import android.app.usage.UsageStatsManager
 import android.appwidget.AppWidgetHost
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProviderInfo
@@ -70,7 +66,6 @@ private const val REQ_EXPORT = 3
 private const val REQ_IMPORT = 4
 private const val REQ_BIND = 5
 private const val REQ_CONFIG = 6
-private const val EV_DESTROYED = 24
 private const val ACCENT = 0xFF4CC2FF.toInt()
 
 class AppEntry(val key: String, val pkg: String, val label: String, val icon: Drawable)
@@ -129,8 +124,6 @@ class MainActivity : Activity() {
     private lateinit var scroll: ScrollView
     private lateinit var grid: GridLayout
     private lateinit var barRow: LinearLayout
-    private val dismissed = HashMap<String, Long>()
-    private val launchedAt = HashMap<String, Long>()
     private lateinit var widgetBox: LinearLayout
     private val widgetMgr by lazy { AppWidgetManager.getInstance(this) }
     private val widgetHost by lazy { AppWidgetHost(this, 1024) }
@@ -347,7 +340,6 @@ class MainActivity : Activity() {
     }
 
     private fun launch(key: String) {
-        launchedAt[key.substringBefore('/')] = System.currentTimeMillis()
         try {
             val i = Intent(Intent.ACTION_MAIN)
             i.addCategory(Intent.CATEGORY_LAUNCHER)
@@ -382,228 +374,53 @@ class MainActivity : Activity() {
 
     // ---------------------------------------------------------------- barra de tarefas
 
-    private fun hasUsageAccess(): Boolean {
-        return try {
-            val ops = getSystemService(APP_OPS_SERVICE) as AppOpsManager
-            val mode = ops.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, android.os.Process.myUid(), packageName)
-            mode == AppOpsManager.MODE_ALLOWED
-        } catch (e: Exception) {
-            false
-        }
-    }
-
-    private fun openPackages(): List<String> {
-        val now = System.currentTimeMillis()
-        val keepMs = store.openMin * 60000L
-        val from = now - 24 * 3600000L
-        val first = LinkedHashMap<String, Long>()
-        val last = HashMap<String, Long>()
-        val alive = HashMap<String, HashSet<String>>()
-        val usage = hasUsageAccess()
-        if (usage) {
-            try {
-                val usm = getSystemService(USAGE_STATS_SERVICE) as UsageStatsManager
-                val ev = usm.queryEvents(from, now)
-                val e = UsageEvents.Event()
-                while (ev.hasNextEvent()) {
-                    ev.getNextEvent(e)
-                    val t = e.eventType
-                    if (t == UsageEvents.Event.MOVE_TO_FOREGROUND || t == UsageEvents.Event.MOVE_TO_BACKGROUND) {
-                        val p = e.packageName
-                        if (!first.containsKey(p)) first[p] = e.timeStamp
-                        last[p] = e.timeStamp
-                        var set = alive[p]
-                        if (set == null) {
-                            set = HashSet()
-                            alive[p] = set
-                        }
-                        set.add(e.className ?: "")
-                    } else if (t == EV_DESTROYED) {
-                        alive[e.packageName]?.remove(e.className ?: "")
-                    }
-                }
-            } catch (ex: Exception) {
-            }
-        } else {
-            for ((p, t) in launchedAt) {
-                first[p] = t
-                last[p] = t
-            }
-        }
-        val launchable = HashSet<String>()
-        for (a in apps) launchable.add(a.pkg)
-        val cand = ArrayList<String>()
-        for (p in first.keys) {
-            if (p == packageName || p !in launchable || p in store.hidden) continue
-            if (usage && (alive[p]?.isEmpty() ?: true)) continue
-            val l = last[p] ?: 0L
-            if (now - l > keepMs) continue
-            if (l <= (dismissed[p] ?: 0L)) continue
-            cand.add(p)
-        }
-        cand.sortByDescending { last[it] ?: 0L }
-        val top = ArrayList<String>(cand.take(8))
-        top.sortBy { first[it] ?: 0L }
-        return top
-    }
-
     private fun renderBar() {
         if (!::barRow.isInitialized) return
         while (barRow.childCount > 1) barRow.removeViewAt(1)
-        val open = openPackages()
-        val shown = HashSet<String>()
         for (k in store.bar) {
             val e = byKey[k] ?: continue
             if (isHidden(k)) continue
-            shown.add(e.pkg)
-            barRow.addView(barItem(e, e.pkg in open))
-        }
-        for (p in open) {
-            if (p in shown) continue
-            val e = apps.firstOrNull { it.pkg == p } ?: continue
-            barRow.addView(barItem(e, true))
+            barRow.addView(barItem(e))
         }
     }
 
-    private fun barItem(e: AppEntry, running: Boolean): View {
+    private fun barItem(e: AppEntry): View {
         val c = LinearLayout(this)
         c.orientation = LinearLayout.VERTICAL
         c.gravity = Gravity.CENTER_HORIZONTAL
-        c.setPadding(dp(4), dp(4), dp(4), dp(2))
+        c.setPadding(dp(4), dp(4), dp(4), dp(4))
         val iv = ImageView(this)
         iv.setImageDrawable(copyIcon(e))
-        c.addView(iv, LinearLayout.LayoutParams(dp(36), dp(36)))
-        val ind = View(this)
-        ind.background = rounded(if (running) ACCENT else Color.TRANSPARENT, dp(2).toFloat())
-        val ilp = LinearLayout.LayoutParams(dp(if (running) 16 else 6), dp(3))
-        ilp.topMargin = dp(2)
-        c.addView(ind, ilp)
+        c.addView(iv, LinearLayout.LayoutParams(dp(38), dp(38)))
         c.setOnClickListener { launch(e.key) }
         c.setOnLongClickListener {
-            showBarMenu(e, running)
+            showBarMenu(e)
             true
         }
         return c
     }
 
-    private fun showBarMenu(e: AppEntry, running: Boolean) {
-        val names = ArrayList<String>()
-        val acts = ArrayList<() -> Unit>()
-        fun add(n: String, a: () -> Unit) {
-            names.add(n)
-            acts.add(a)
-        }
-        if (e.key in store.bar) {
-            add("Desafixar da barra") {
-                store.bar.remove(e.key)
-                store.save()
-                renderBar()
-            }
-        } else {
-            add("Fixar na barra") {
-                store.bar.add(e.key)
-                store.save()
-                renderBar()
-            }
-        }
-        if (running) {
-            add("Encerrar app") { killApp(e.pkg) }
-            add("Tirar dos abertos (sem encerrar)") {
-                dismissed[e.pkg] = System.currentTimeMillis()
-                renderBar()
-            }
-        }
-        add("Informações do app") { appInfo(e.pkg) }
-        dlg().setTitle(e.label).setItems(names.toTypedArray()) { _, w -> acts[w]() }.show()
-    }
-
-    private fun killApp(pkg: String) {
-        try {
-            val am = getSystemService(ACTIVITY_SERVICE) as ActivityManager
-            am.killBackgroundProcesses(pkg)
-        } catch (e: Exception) {
-        }
-        dismissed[pkg] = System.currentTimeMillis()
-        renderBar()
-        toast("App encerrado")
-    }
-
-    private fun clearOpen() {
-        val nowMs = System.currentTimeMillis()
-        for (p in openPackages()) dismissed[p] = nowMs
-        renderBar()
-        toast("Lista de apps abertos limpa")
-    }
-
-    private fun usageDialog() {
-        val items = arrayOf(
-            "Permitir acesso ao uso…",
-            "Considerar aberto por: " + store.openMin + " min",
-            "Limpar lista de abertos agora",
-            "Diagnóstico"
-        )
-        dlg().setTitle("Apps abertos na barra").setItems(items) { _, w ->
+    private fun showBarMenu(e: AppEntry) {
+        val names = arrayOf("Mover para a esquerda", "Mover para a direita", "Desafixar da barra", "Informações do app")
+        dlg().setTitle(e.label).setItems(names) { _, w ->
+            val idx = store.bar.indexOf(e.key)
             when (w) {
-                0 -> usageSettings()
-                1 -> openTimeDialog()
-                2 -> clearOpen()
-                3 -> usageDiagnostic()
+                0 -> if (idx > 0) {
+                    store.bar.removeAt(idx)
+                    store.bar.add(idx - 1, e.key)
+                }
+                1 -> if (idx >= 0 && idx < store.bar.size - 1) {
+                    store.bar.removeAt(idx)
+                    store.bar.add(idx + 1, e.key)
+                }
+                2 -> store.bar.remove(e.key)
+                3 -> appInfo(e.pkg)
                 else -> {
                 }
             }
-        }.show()
-    }
-
-    private fun openTimeDialog() {
-        val labels = arrayOf("10 minutos", "30 minutos", "1 hora", "3 horas", "6 horas")
-        val mins = intArrayOf(10, 30, 60, 180, 360)
-        dlg().setTitle("Considerar aberto por").setItems(labels) { _, w ->
-            store.openMin = mins[w]
             store.save()
             renderBar()
         }.show()
-    }
-
-    private fun usageDiagnostic() {
-        if (!hasUsageAccess()) {
-            toast("O acesso ao uso ainda não foi concedido")
-            return
-        }
-        val counts = HashMap<Int, Int>()
-        var total = 0
-        try {
-            val now = System.currentTimeMillis()
-            val usm = getSystemService(USAGE_STATS_SERVICE) as UsageStatsManager
-            val ev = usm.queryEvents(now - 6 * 3600000L, now)
-            val e = UsageEvents.Event()
-            while (ev.hasNextEvent()) {
-                ev.getNextEvent(e)
-                counts[e.eventType] = (counts[e.eventType] ?: 0) + 1
-                total++
-            }
-        } catch (ex: Exception) {
-        }
-        val msg = "Eventos nas últimas 6 horas: " + total +
-            "\nTela aberta: " + (counts[1] ?: 0) +
-            "\nTela em segundo plano: " + (counts[2] ?: 0) +
-            "\nTela parada: " + (counts[23] ?: 0) +
-            "\nTela destruída: " + (counts[24] ?: 0) +
-            "\n\nSe \"destruída\" for 0, este Android não avisa quando um app é fechado, e a barra usa só o tempo definido."
-        dlg().setTitle("Diagnóstico").setMessage(msg).setPositiveButton("OK", null).show()
-    }
-
-    private fun usageSettings() {
-        try {
-            val i = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
-            i.data = Uri.parse("package:$packageName")
-            startActivity(i)
-        } catch (e: Exception) {
-            try {
-                startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
-            } catch (e2: Exception) {
-                toast("Abra Configurações > Privacidade > Acesso especial > Acesso ao uso")
-            }
-        }
     }
 
     private fun refreshAll() {
@@ -657,10 +474,6 @@ class MainActivity : Activity() {
         startBtn.setImageDrawable(StartDrawable())
         startBtn.background = rounded(0x22FFFFFF, dp(14).toFloat())
         startBtn.setOnClickListener { if (panelOpen) closePanel() else openPanel() }
-        startBtn.setOnLongClickListener {
-            clearOpen()
-            true
-        }
         barRow = LinearLayout(this)
         barRow.orientation = LinearLayout.HORIZONTAL
         barRow.gravity = Gravity.CENTER_VERTICAL
@@ -1830,8 +1643,7 @@ class MainActivity : Activity() {
             "Nova pasta…",
             "Exportar backup (arquivo)",
             "Importar backup (arquivo)",
-            "Definir como launcher padrão",
-            "Apps abertos na barra: " + (if (hasUsageAccess()) "ativo (toque para gerenciar)" else "toque para ativar")
+            "Definir como launcher padrão"
         )
         dlg().setTitle("Ajustes do início").setItems(items) { _, w ->
             when (w) {
@@ -1855,7 +1667,6 @@ class MainActivity : Activity() {
                         toast("Abra Configurações > Apps > Apps padrão > App de início")
                     }
                 }
-                10 -> usageDialog()
                 else -> {
                 }
             }
