@@ -485,18 +485,8 @@ class MainActivity : Activity() {
         barScroll.overScrollMode = View.OVER_SCROLL_NEVER
         barScroll.addView(barRow)
         val blp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.CENTER)
-        blp.setMargins(dp(64), 0, dp(64), 0)
+        blp.setMargins(dp(12), 0, dp(12), 0)
         taskbar.addView(barScroll, blp)
-
-        val gear = ImageView(this)
-        gear.setImageResource(android.R.drawable.ic_menu_preferences)
-        gear.setColorFilter(Color.WHITE)
-        gear.setPadding(dp(10), dp(10), dp(10), dp(10))
-        gear.background = rounded(0xB3101014.toInt(), dp(14).toFloat())
-        gear.setOnClickListener { showSettings() }
-        val glp = FrameLayout.LayoutParams(dp(44), dp(44), Gravity.END or Gravity.CENTER_VERTICAL)
-        glp.marginEnd = dp(12)
-        taskbar.addView(gear, glp)
 
         content.addView(taskbar, LinearLayout.LayoutParams(MATCH, dp(64)))
         root.addView(content, FrameLayout.LayoutParams(MATCH, MATCH))
