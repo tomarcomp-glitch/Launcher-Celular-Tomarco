@@ -70,6 +70,7 @@ private const val REQ_EXPORT = 3
 private const val REQ_IMPORT = 4
 private const val REQ_BIND = 5
 private const val REQ_CONFIG = 6
+private const val EV_DESTROYED = 24
 private const val ACCENT = 0xFF4CC2FF.toInt()
 
 class AppEntry(val key: String, val pkg: String, val label: String, val icon: Drawable)
@@ -417,7 +418,7 @@ class MainActivity : Activity() {
                             alive[p] = set
                         }
                         set.add(e.className ?: "")
-                    } else if (t == UsageEvents.Event.ACTIVITY_DESTROYED) {
+                    } else if (t == EV_DESTROYED) {
                         alive[e.packageName]?.remove(e.className ?: "")
                     }
                 }
