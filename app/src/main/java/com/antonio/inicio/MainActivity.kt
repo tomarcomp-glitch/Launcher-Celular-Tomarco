@@ -396,17 +396,28 @@ class MainActivity : Activity() {
         val from = now - 6 * 3600000L
         val first = LinkedHashMap<String, Long>()
         val last = HashMap<String, Long>()
-        if (hasUsageAccess()) {
+        val alive = HashMap<String, HashSet<String>>()
+        val usage = hasUsageAccess()
+        if (usage) {
             try {
                 val usm = getSystemService(USAGE_STATS_SERVICE) as UsageStatsManager
                 val ev = usm.queryEvents(from, now)
                 val e = UsageEvents.Event()
                 while (ev.hasNextEvent()) {
                     ev.getNextEvent(e)
-                    if (e.eventType == UsageEvents.Event.MOVE_TO_FOREGROUND) {
+                    val t = e.eventType
+                    if (t == UsageEvents.Event.MOVE_TO_FOREGROUND) {
                         val p = e.packageName
                         if (!first.containsKey(p)) first[p] = e.timeStamp
                         last[p] = e.timeStamp
+                        var set = alive[p]
+                        if (set == null) {
+                            set = HashSet()
+                            alive[p] = set
+                        }
+                        set.add(e.className ?: "")
+                    } else if (t == UsageEvents.Event.ACTIVITY_DESTROYED) {
+                        alive[e.packageName]?.remove(e.className ?: "")
                     }
                 }
             } catch (ex: Exception) {
@@ -424,6 +435,7 @@ class MainActivity : Activity() {
         val cand = ArrayList<String>()
         for (p in first.keys) {
             if (p == packageName || p !in launchable || p in store.hidden) continue
+            if (usage && (alive[p]?.isEmpty() ?: true)) continue
             val l = last[p] ?: 0L
             if (l <= (dismissed[p] ?: 0L)) continue
             cand.add(p)
@@ -580,6 +592,13 @@ class MainActivity : Activity() {
         startBtn.setImageDrawable(StartDrawable())
         startBtn.background = rounded(0x22FFFFFF, dp(14).toFloat())
         startBtn.setOnClickListener { if (panelOpen) closePanel() else openPanel() }
+        startBtn.setOnLongClickListener {
+            val nowMs = System.currentTimeMillis()
+            for (p in openPackages()) dismissed[p] = nowMs
+            renderBar()
+            toast("Lista de apps abertos limpa")
+            true
+        }
         barRow = LinearLayout(this)
         barRow.orientation = LinearLayout.HORIZONTAL
         barRow.gravity = Gravity.CENTER_VERTICAL
